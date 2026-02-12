@@ -13,17 +13,55 @@ import ProspectDetail from './components/ProspectDetail';
 import TeamDirectory from './components/UserManagement';
 import CloudSetup from './components/CloudSetup';
 import UserProfile from './components/UserProfile';
+import OnboardingTour from './components/OnboardingTour';
 
-const scrub = (obj: any): any => {
-  if (Array.isArray(obj)) return obj.map(scrub);
-  if (obj !== null && typeof obj === 'object') {
-    return Object.fromEntries(
-      Object.entries(obj)
-        .filter(([_, v]) => v !== undefined)
-        .map(([k, v]) => [k, scrub(v)])
-    );
+/**
+ * Enhanced Scrubbing: Aggressively strips any object that isn't a plain literal 
+ * and handles circular references using a WeakSet.
+ */
+const scrub = (obj: any, seen = new WeakSet()): any => {
+  if (obj === null || typeof obj !== 'object') return obj;
+  
+  // Prevent circularity crash
+  if (seen.has(obj)) return undefined;
+
+  if (Array.isArray(obj)) {
+    seen.add(obj);
+    return obj.map(item => scrub(item, seen)).filter(v => v !== undefined);
   }
-  return obj;
+
+  // Strict check for Plain Old JavaScript Objects (POJOs)
+  // This correctly identifies and strips Leaflet (Q$1), Firebase, or DOM objects.
+  const isPlain = Object.prototype.toString.call(obj) === '[object Object]' && 
+                  (obj.constructor === Object || obj.constructor === undefined);
+  
+  if (!isPlain) return undefined;
+
+  seen.add(obj);
+  const clean: any = {};
+  let hasProperties = false;
+
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      const val = scrub(obj[key], seen);
+      if (val !== undefined) {
+        clean[key] = val;
+        hasProperties = true;
+      }
+    }
+  }
+
+  return hasProperties ? clean : {};
+};
+
+// Final defense for JSON serialization
+const safeStringify = (obj: any): string => {
+  try {
+    return JSON.stringify(scrub(obj));
+  } catch (e) {
+    console.error("Critical stringify failure:", e);
+    return "{}";
+  }
 };
 
 const App: React.FC = () => {
@@ -35,6 +73,7 @@ const App: React.FC = () => {
   const [selectedProspectId, setSelectedProspectId] = useState<string | null>(null);
   const [cloudEnabled, setCloudEnabled] = useState(initialConfigured);
   const [permissionError, setPermissionError] = useState(false);
+  const [showTour, setShowTour] = useState(false);
 
   useEffect(() => {
     let unsubAuth = () => {};
@@ -48,7 +87,12 @@ const App: React.FC = () => {
             const userDoc = await getDoc(doc(fbDb, 'users', firebaseUser.uid));
             if (userDoc.exists()) {
               const userData = userDoc.data() as User;
-              if (userData.status === UserStatus.APPROVED) setUser(userData);
+              if (userData.status === UserStatus.APPROVED) {
+                setUser(userData);
+                if (userData.hasSeenTour === false) {
+                  setShowTour(true);
+                }
+              }
               else { await signOut(fbAuth); setUser(null); }
             } else {
               setUser(null);
@@ -90,13 +134,25 @@ const App: React.FC = () => {
 
     } else {
       const savedSession = localStorage.getItem('evangelism_session');
-      if (savedSession) setUser(JSON.parse(savedSession));
+      if (savedSession) {
+        try {
+          const localUser = JSON.parse(savedSession);
+          setUser(localUser);
+          if (localUser.hasSeenTour === false) setShowTour(true);
+        } catch (e) {
+          localStorage.removeItem('evangelism_session');
+        }
+      }
       
       const localP = localStorage.getItem('evangelism_prospects');
-      if (localP) setProspects(JSON.parse(localP));
+      if (localP) {
+        try { setProspects(JSON.parse(localP)); } catch (e) { localStorage.removeItem('evangelism_prospects'); }
+      }
       
       const localU = localStorage.getItem('evangelism_users');
-      if (localU) setRegisteredUsers(JSON.parse(localU));
+      if (localU) {
+        try { setRegisteredUsers(JSON.parse(localU)); } catch (e) { localStorage.removeItem('evangelism_users'); }
+      }
       
       setLoading(false);
     }
@@ -123,13 +179,11 @@ const App: React.FC = () => {
     if (cloudEnabled && fbDb) {
       await updateDoc(doc(fbDb, 'users', userId), data);
     } else {
-      setRegisteredUsers(prev => prev.map(u => u.id === userId ? { ...u, ...data } : u));
-      const savedUsers = localStorage.getItem('evangelism_users');
-      if (savedUsers) {
-        let localUsers: User[] = JSON.parse(savedUsers);
-        localUsers = localUsers.map(u => u.id === userId ? { ...u, ...data } : u);
-        localStorage.setItem('evangelism_users', JSON.stringify(localUsers));
-      }
+      setRegisteredUsers(prev => {
+        const updated = prev.map(u => u.id === userId ? { ...u, ...data } : u);
+        localStorage.setItem('evangelism_users', safeStringify(updated));
+        return updated;
+      });
     }
   };
 
@@ -144,11 +198,16 @@ const App: React.FC = () => {
       const savedUsers = localStorage.getItem('evangelism_users');
       let users: User[] = savedUsers ? JSON.parse(savedUsers) : [];
       users = users.map(u => u.id === user.id ? updatedUser : u);
-      localStorage.setItem('evangelism_users', JSON.stringify(users));
-      localStorage.setItem('evangelism_session', JSON.stringify(updatedUser));
+      localStorage.setItem('evangelism_users', safeStringify(users));
+      localStorage.setItem('evangelism_session', safeStringify(updatedUser));
       setRegisteredUsers(users);
     }
     setUser(updatedUser);
+  };
+
+  const handleCompleteTour = () => {
+    setShowTour(false);
+    handleUpdateProfile({ hasSeenTour: true });
   };
 
   const addProspect = async (newProspect: Prospect) => {
@@ -157,7 +216,7 @@ const App: React.FC = () => {
       await setDoc(doc(fbDb, 'prospects', newProspect.id), data);
     } else {
       const p = [data, ...prospects];
-      localStorage.setItem('evangelism_prospects', JSON.stringify(p));
+      localStorage.setItem('evangelism_prospects', safeStringify(p));
       setProspects(p);
     }
     setActiveTab('people');
@@ -169,7 +228,7 @@ const App: React.FC = () => {
       await setDoc(doc(fbDb, 'prospects', updatedProspect.id), data);
     } else {
       const p = prospects.map(x => x.id === updatedProspect.id ? data : x);
-      localStorage.setItem('evangelism_prospects', JSON.stringify(p));
+      localStorage.setItem('evangelism_prospects', safeStringify(p));
       setProspects(p);
     }
   };
@@ -181,7 +240,11 @@ const App: React.FC = () => {
   );
 
   if (!user) return <Login 
-    onLocalLogin={(u) => { setUser(u); localStorage.setItem('evangelism_session', JSON.stringify(u)); }} 
+    onLocalLogin={(u) => { 
+      setUser(u); 
+      localStorage.setItem('evangelism_session', safeStringify(u));
+      if (u.hasSeenTour === false) setShowTour(true);
+    }} 
     onGoToCloud={() => setActiveTab('cloud')}
   />;
 
@@ -192,18 +255,20 @@ const App: React.FC = () => {
     }
 
     switch (activeTab) {
-      case 'dashboard': return <Dashboard prospects={prospects} users={registeredUsers} onSelectProspect={setSelectedProspectId} />;
+      case 'dashboard': return <Dashboard prospects={prospects} users={registeredUsers} onSelectProspect={setSelectedProspectId} currentUser={user} />;
       case 'new': return <NewOutreach onSave={addProspect} currentUser={user} />;
       case 'people': return <ProspectList prospects={prospects} onSelectProspect={setSelectedProspectId} />;
       case 'users': return <TeamDirectory users={registeredUsers} onUpdateStatus={updateUserStatus} currentUser={user} onGoToCloud={() => setActiveTab('cloud')} />;
       case 'cloud': return <CloudSetup onConnect={handleConnectCloud} />;
       case 'profile': return <UserProfile user={user} onUpdate={handleUpdateProfile} />;
-      default: return <Dashboard prospects={prospects} users={registeredUsers} onSelectProspect={setSelectedProspectId} />;
+      default: return <Dashboard prospects={prospects} users={registeredUsers} onSelectProspect={setSelectedProspectId} currentUser={user} />;
     }
   };
 
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
+    <div className="flex h-screen bg-gray-50 overflow-hidden relative">
+      {showTour && <OnboardingTour onComplete={handleCompleteTour} />}
+      
       <Sidebar 
         activeTab={activeTab} 
         setActiveTab={(t) => { setActiveTab(t as any); setSelectedProspectId(null); }} 

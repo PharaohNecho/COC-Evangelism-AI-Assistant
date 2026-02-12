@@ -63,4 +63,5 @@ export interface User {
   phone?: string;
   photoUrl?: string;
   team?: string;
+  hasSeenTour?: boolean;
 }

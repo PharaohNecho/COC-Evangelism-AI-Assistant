@@ -16,11 +16,17 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, us
 
   const tabs = [
     { id: 'dashboard', icon: 'fa-chart-pie', label: 'Dashboard' },
-    { id: 'new', icon: 'fa-plus-circle', label: 'New Outreach' },
-    { id: 'people', icon: 'fa-users', label: 'Prospects' },
-    { id: 'users', icon: 'fa-user-shield', label: user.role === UserRole.TEAM_MEMBER ? 'Our Team' : 'Team Directory' },
-    { id: 'profile', icon: 'fa-user-circle', label: 'My Profile' },
-  ] as { id: string, icon: string, label: string }[];
+    { id: 'new', icon: 'fa-plus-circle', label: 'New Outreach', tourId: 'tour-tab-new' },
+    { id: 'people', icon: 'fa-users', label: 'Prospects', tourId: 'tour-tab-people' },
+    { id: 'users', icon: 'fa-user-shield', label: user.role === UserRole.TEAM_MEMBER ? 'Our Team' : 'Team Directory', tourId: 'tour-tab-users' },
+  ] as { id: string, icon: string, label: string, tourId?: string }[];
+
+  // Add settings/cloud tab for Admins
+  if (user.role !== UserRole.TEAM_MEMBER) {
+    tabs.push({ id: 'cloud', icon: 'fa-cog', label: 'Settings', tourId: 'tour-tab-settings' });
+  }
+
+  tabs.push({ id: 'profile', icon: 'fa-user-circle', label: 'My Profile' });
 
   return (
     <>
@@ -44,6 +50,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, us
           {tabs.map((tab) => (
             <button
               key={tab.id}
+              id={tab.tourId}
               onClick={() => setActiveTab(tab.id)}
               className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all ${
                 activeTab === tab.id 
@@ -58,6 +65,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, us
 
           <div className="pt-4 mt-4 border-t border-gray-50">
             <button 
+              id="tour-invite-sidebar"
               onClick={() => setShowInvite(true)}
               className="w-full flex items-center gap-3 p-3 rounded-xl text-blue-600 bg-blue-50/50 hover:bg-blue-50 transition-all group"
             >
@@ -94,7 +102,16 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, us
         </div>
       </aside>
 
-      {showInvite && <InviteModal onClose={() => setShowInvite(false)} currentUser={user} />}
+      {showInvite && (
+        <InviteModal 
+          onClose={() => setShowInvite(false)} 
+          currentUser={user} 
+          onNavigateToSettings={() => {
+            setActiveTab('cloud');
+            setShowInvite(false);
+          }}
+        />
+      )}
     </>
   );
 };

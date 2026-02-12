@@ -1,16 +1,29 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Prospect, HungerLevel, User } from '../types';
 import InviteModal from './InviteModal';
+
+// Declare L as any for simplicity with CDN usage in TSX
+declare const L: any;
 
 interface DashboardProps {
   prospects: Prospect[];
   users: User[];
   onSelectProspect: (id: string) => void;
+  currentUser: User;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspect }) => {
+const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspect, currentUser }) => {
   const [showInvite, setShowInvite] = useState(false);
+  const [userLocation, setUserLocation] = useState<{ lat: number, lng: number } | null>(null);
+  const [nearbyProspects, setNearbyProspects] = useState<Prospect[]>([]);
+  const [mapMode, setMapMode] = useState<'local' | 'global'>('local');
+  
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const markersRef = useRef<any[]>([]);
+  const userMarkerRef = useRef<any>(null);
+
   const baptismCandidates = prospects.filter(p => p.signifiedForBaptism).length;
   
   const stats = [
@@ -20,7 +33,146 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
     { label: 'Followed Up', value: prospects.filter(p => p.status === 'Followed Up').length, icon: 'fa-check-circle', color: 'green' },
   ];
 
-  // Performance calculations
+  // Helper: Calculate distance in KM using Haversine formula
+  const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371; // Radius of the earth in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+  };
+
+  // Initialize Geolocation
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const newLoc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setUserLocation(newLoc);
+        
+        // Find nearby prospects (within 5km)
+        const nearby = prospects.filter(p => {
+          if (!p.coordinates) return false;
+          return getDistance(newLoc.lat, newLoc.lng, p.coordinates.lat, p.coordinates.lng) <= 5;
+        });
+        setNearbyProspects(nearby);
+      },
+      (err) => console.error("Location access denied", err),
+      { enableHighAccuracy: true }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [prospects]);
+
+  // Initialize and update map
+  useEffect(() => {
+    if (!mapContainerRef.current) return;
+
+    if (!mapInstanceRef.current) {
+      mapInstanceRef.current = L.map(mapContainerRef.current).setView([0, 0], 2);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(mapInstanceRef.current);
+    }
+
+    const map = mapInstanceRef.current;
+
+    // Manage User Location Marker
+    if (userLocation) {
+      if (userMarkerRef.current) {
+        userMarkerRef.current.setLatLng([userLocation.lat, userLocation.lng]);
+      } else {
+        const userIcon = L.divIcon({
+          className: 'user-loc-icon',
+          html: `
+            <div class="relative flex items-center justify-center">
+              <div class="absolute w-6 h-6 bg-green-500 rounded-full animate-ping opacity-25"></div>
+              <div class="relative w-4 h-4 bg-green-600 rounded-full border-2 border-white shadow-lg"></div>
+            </div>
+          `,
+          iconSize: [24, 24],
+          iconAnchor: [12, 12]
+        });
+        userMarkerRef.current = L.marker([userLocation.lat, userLocation.lng], { icon: userIcon, zIndexOffset: 1000 }).addTo(map);
+      }
+      
+      // Auto-center on first location fix if in local mode
+      if (mapMode === 'local' && markersRef.current.length === 0) {
+        map.setView([userLocation.lat, userLocation.lng], 13);
+      }
+    }
+
+    // Clear old prospect markers
+    markersRef.current.forEach(m => map.removeLayer(m));
+    markersRef.current = [];
+
+    const relevantProspects = prospects.filter(p => p.coordinates);
+
+    relevantProspects.forEach(p => {
+      const markerColor = p.aiReview?.hungerLevel === HungerLevel.HIGH ? '#f97316' : '#2563eb';
+      const icon = L.divIcon({
+        className: 'custom-div-icon',
+        html: `<div style="background-color: ${markerColor}; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 5px rgba(0,0,0,0.3);"></div>`,
+        iconSize: [12, 12],
+        iconAnchor: [6, 6]
+      });
+
+      const marker = L.marker([p.coordinates!.lat, p.coordinates!.lng], { icon })
+        .addTo(map)
+        .bindPopup(`
+          <div style="font-family: sans-serif; padding: 5px;">
+            <strong style="display: block; margin-bottom: 2px;">${p.name}</strong>
+            <span style="font-size: 11px; color: #666;">Status: ${p.status}</span><br/>
+            <button onclick="window.dispatchEvent(new CustomEvent('selectProspect', {detail: '${p.id}'}))" style="margin-top: 8px; font-size: 10px; background: #2563eb; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer;">View Profile</button>
+          </div>
+        `);
+      
+      markersRef.current.push(marker);
+    });
+
+    // Handle Bounds
+    if (mapMode === 'global' && markersRef.current.length > 0) {
+      const boundsArr = relevantProspects.map(p => [p.coordinates!.lat, p.coordinates!.lng]);
+      if (boundsArr.length > 0) {
+        const bounds = L.latLngBounds(boundsArr);
+        map.fitBounds(bounds, { padding: [50, 50] });
+      }
+    }
+
+    // Cleanup Leaflet instance on unmount handled by ref but we ensure markers are managed
+  }, [prospects, userLocation, mapMode]);
+
+  const recenterOnMe = () => {
+    if (userLocation && mapInstanceRef.current) {
+      setMapMode('local');
+      mapInstanceRef.current.flyTo([userLocation.lat, userLocation.lng], 14, { duration: 1.5 });
+    }
+  };
+
+  const showNearbyOnly = () => {
+    if (nearbyProspects.length > 0 && userLocation && mapInstanceRef.current) {
+      setMapMode('local');
+      const boundsArr = [
+        [userLocation.lat, userLocation.lng],
+        ...nearbyProspects.map(p => [p.coordinates!.lat, p.coordinates!.lng])
+      ];
+      const bounds = L.latLngBounds(boundsArr);
+      mapInstanceRef.current.fitBounds(bounds, { padding: [80, 80], animate: true });
+    }
+  };
+
+  // Handle popup button click
+  useEffect(() => {
+    const handleSelect = (e: any) => onSelectProspect(e.detail);
+    window.addEventListener('selectProspect', handleSelect);
+    return () => window.removeEventListener('selectProspect', handleSelect);
+  }, [onSelectProspect]);
+
   const getTopPerformer = (roleFilter: 'Team Member' | 'Leader') => {
     const preacherStats: Record<string, number> = {};
     prospects.forEach(p => {
@@ -52,6 +204,7 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
           <p className="text-gray-500 mt-1">Summary of outreach efforts and soul winning milestones.</p>
         </div>
         <button 
+          id="tour-invite-header"
           onClick={() => setShowInvite(true)}
           className="bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all flex items-center gap-2"
         >
@@ -61,7 +214,7 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
       </header>
 
       {/* Primary Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
+      <div id="tour-dashboard-stats" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
         {stats.map((s, idx) => (
           <div key={idx} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4 transition-transform hover:scale-[1.02]">
             <div className={`w-12 h-12 rounded-xl bg-${s.color}-100 flex items-center justify-center text-${s.color}-600`}>
@@ -74,6 +227,76 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
           </div>
         ))}
       </div>
+
+      {/* Map Section */}
+      <section className="bg-white p-6 rounded-[2rem] shadow-sm border border-gray-100 overflow-hidden relative">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+          <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+            <i className="fas fa-map-marked-alt text-blue-600"></i>
+            Geographical Outreach Map
+          </h2>
+          
+          <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-xl">
+            <button 
+              onClick={() => setMapMode('local')}
+              className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${mapMode === 'local' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              <i className="fas fa-street-view mr-2"></i>My Area
+            </button>
+            <button 
+              onClick={() => setMapMode('global')}
+              className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${mapMode === 'global' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              <i className="fas fa-globe mr-2"></i>Global
+            </button>
+          </div>
+        </div>
+
+        <div className="relative group">
+          <div ref={mapContainerRef} className="bg-gray-50 h-[450px] rounded-2xl overflow-hidden" />
+          
+          {/* Floating UI Controls */}
+          <div className="absolute top-4 right-4 flex flex-col gap-2 z-[1000]">
+            <button 
+              onClick={recenterOnMe}
+              className="w-10 h-10 bg-white rounded-xl shadow-lg border border-gray-200 flex items-center justify-center text-gray-600 hover:text-blue-600 hover:bg-gray-50 transition-all"
+              title="Recenter on Me"
+            >
+              <i className="fas fa-location-crosshairs"></i>
+            </button>
+          </div>
+
+          {nearbyProspects.length > 0 && (
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1000] animate-in slide-in-from-bottom-4 duration-500">
+              <button 
+                onClick={showNearbyOnly}
+                className="bg-blue-600 text-white px-6 py-3 rounded-full font-bold text-sm shadow-2xl flex items-center gap-3 hover:bg-blue-700 hover:scale-105 transition-all"
+              >
+                <div className="w-5 h-5 bg-white/20 rounded-full flex items-center justify-center text-[10px]">
+                  {nearbyProspects.length}
+                </div>
+                Nearby Prospects Detected
+                <i className="fas fa-chevron-up text-[10px]"></i>
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-4 text-xs font-medium text-gray-400">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-blue-600 border border-white shadow-sm"></div>
+            <span>Standard Prospect</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-orange-500 border border-white shadow-sm"></div>
+            <span>High Spiritual Hunger</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-green-600 border-2 border-white ring-2 ring-green-200 ring-offset-2 animate-pulse"></div>
+            <span>You (Current Location)</span>
+          </div>
+        </div>
+      </section>
 
       {/* Recognition Section */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -102,6 +325,7 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
           </div>
         </div>
         <div 
+          id="tour-invite-card"
           onClick={() => setShowInvite(true)}
           className="md:col-span-1 bg-white p-6 rounded-2xl shadow-md border-2 border-dashed border-blue-200 flex items-center gap-4 cursor-pointer hover:bg-blue-50 hover:border-blue-400 transition-all group"
         >
@@ -192,7 +416,7 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
           </div>
         </section>
       </div>
-      {showInvite && <InviteModal onClose={() => setShowInvite(false)} />}
+      {showInvite && <InviteModal onClose={() => setShowInvite(false)} currentUser={currentUser} />}
     </div>
   );
 };
