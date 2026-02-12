@@ -1,0 +1,8 @@
+{
+  "name": "COC Evangelism AI Assistant",
+  "description": "A comprehensive church evangelism system for tracking outreach, logging GPS coordinates, capturing photos, and using Gemini AI to suggest follow-up actions and analyze spiritual hunger levels.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
