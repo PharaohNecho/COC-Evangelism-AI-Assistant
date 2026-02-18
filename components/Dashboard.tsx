@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Prospect, HungerLevel, User } from '../types';
 import InviteModal from './InviteModal';
+import { getSoulWinningStrategy } from '../services/geminiService';
 
 // Declare L as any for simplicity with CDN usage in TSX
 declare const L: any;
@@ -19,19 +20,45 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
   const [nearbyProspects, setNearbyProspects] = useState<Prospect[]>([]);
   const [mapMode, setMapMode] = useState<'local' | 'global'>('local');
   
+  // AI Strategy states
+  const [aiStrategy, setAiStrategy] = useState<string | null>(null);
+  const [loadingStrategy, setLoadingStrategy] = useState(false);
+  
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const userMarkerRef = useRef<any>(null);
 
   const baptismCandidates = prospects.filter(p => p.signifiedForBaptism).length;
+  const highHungerCount = prospects.filter(p => p.aiReview?.hungerLevel === HungerLevel.HIGH).length;
   
   const stats = [
     { label: 'Total Prospects', value: prospects.length, icon: 'fa-users', color: 'blue' },
     { label: 'Baptism Interests', value: baptismCandidates, icon: 'fa-water', color: 'cyan' },
-    { label: 'High Hunger', value: prospects.filter(p => p.aiReview?.hungerLevel === HungerLevel.HIGH).length, icon: 'fa-fire', color: 'orange' },
+    { label: 'High Hunger', value: highHungerCount, icon: 'fa-fire', color: 'orange' },
     { label: 'Followed Up', value: prospects.filter(p => p.status === 'Followed Up').length, icon: 'fa-check-circle', color: 'green' },
   ];
+
+  const fetchStrategy = async () => {
+    if (prospects.length === 0) return;
+    setLoadingStrategy(true);
+    try {
+      const strategy = await getSoulWinningStrategy({ 
+        total: prospects.length, 
+        baptism: baptismCandidates, 
+        highHunger: highHungerCount 
+      });
+      setAiStrategy(strategy);
+    } catch (e) {
+      console.error("Failed to load strategy", e);
+    } finally {
+      setLoadingStrategy(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchStrategy();
+  }, [prospects.length]);
 
   // Helper: Calculate distance in KM using Haversine formula
   const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
@@ -55,7 +82,6 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
         const newLoc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         setUserLocation(newLoc);
         
-        // Find nearby prospects (within 5km)
         const nearby = prospects.filter(p => {
           if (!p.coordinates) return false;
           return getDistance(newLoc.lat, newLoc.lng, p.coordinates.lat, p.coordinates.lng) <= 5;
@@ -82,7 +108,6 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
 
     const map = mapInstanceRef.current;
 
-    // Manage User Location Marker
     if (userLocation) {
       if (userMarkerRef.current) {
         userMarkerRef.current.setLatLng([userLocation.lat, userLocation.lng]);
@@ -101,13 +126,11 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
         userMarkerRef.current = L.marker([userLocation.lat, userLocation.lng], { icon: userIcon, zIndexOffset: 1000 }).addTo(map);
       }
       
-      // Auto-center on first location fix if in local mode
       if (mapMode === 'local' && markersRef.current.length === 0) {
         map.setView([userLocation.lat, userLocation.lng], 13);
       }
     }
 
-    // Clear old prospect markers
     markersRef.current.forEach(m => map.removeLayer(m));
     markersRef.current = [];
 
@@ -135,7 +158,6 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
       markersRef.current.push(marker);
     });
 
-    // Handle Bounds
     if (mapMode === 'global' && markersRef.current.length > 0) {
       const boundsArr = relevantProspects.map(p => [p.coordinates!.lat, p.coordinates!.lng]);
       if (boundsArr.length > 0) {
@@ -143,8 +165,6 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
         map.fitBounds(bounds, { padding: [50, 50] });
       }
     }
-
-    // Cleanup Leaflet instance on unmount handled by ref but we ensure markers are managed
   }, [prospects, userLocation, mapMode]);
 
   const recenterOnMe = () => {
@@ -154,45 +174,11 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
     }
   };
 
-  const showNearbyOnly = () => {
-    if (nearbyProspects.length > 0 && userLocation && mapInstanceRef.current) {
-      setMapMode('local');
-      const boundsArr = [
-        [userLocation.lat, userLocation.lng],
-        ...nearbyProspects.map(p => [p.coordinates!.lat, p.coordinates!.lng])
-      ];
-      const bounds = L.latLngBounds(boundsArr);
-      mapInstanceRef.current.fitBounds(bounds, { padding: [80, 80], animate: true });
-    }
-  };
-
-  // Handle popup button click
   useEffect(() => {
     const handleSelect = (e: any) => onSelectProspect(e.detail);
     window.addEventListener('selectProspect', handleSelect);
     return () => window.removeEventListener('selectProspect', handleSelect);
   }, [onSelectProspect]);
-
-  const getTopPerformer = (roleFilter: 'Team Member' | 'Leader') => {
-    const preacherStats: Record<string, number> = {};
-    prospects.forEach(p => {
-      preacherStats[p.preacherName] = (preacherStats[p.preacherName] || 0) + 1;
-    });
-
-    const relevantPreachers = Object.entries(preacherStats).filter(([name]) => {
-      const user = users.find(u => u.name === name);
-      if (!user) return false;
-      if (roleFilter === 'Team Member') return user.role === 'Team Member';
-      return user.role === 'Admin' || user.role === 'SuperAdmin';
-    });
-
-    if (relevantPreachers.length === 0) return null;
-    relevantPreachers.sort((a, b) => b[1] - a[1]);
-    return { name: relevantPreachers[0][0], count: relevantPreachers[0][1] };
-  };
-
-  const topTeamMember = getTopPerformer('Team Member');
-  const topLeader = getTopPerformer('Leader');
 
   const recent = prospects.slice(0, 5);
 
@@ -255,7 +241,6 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
         <div className="relative group">
           <div ref={mapContainerRef} className="bg-gray-50 h-[450px] rounded-2xl overflow-hidden" />
           
-          {/* Floating UI Controls */}
           <div className="absolute top-4 right-4 flex flex-col gap-2 z-[1000]">
             <button 
               onClick={recenterOnMe}
@@ -265,79 +250,51 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
               <i className="fas fa-location-crosshairs"></i>
             </button>
           </div>
-
-          {nearbyProspects.length > 0 && (
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1000] animate-in slide-in-from-bottom-4 duration-500">
-              <button 
-                onClick={showNearbyOnly}
-                className="bg-blue-600 text-white px-6 py-3 rounded-full font-bold text-sm shadow-2xl flex items-center gap-3 hover:bg-blue-700 hover:scale-105 transition-all"
-              >
-                <div className="w-5 h-5 bg-white/20 rounded-full flex items-center justify-center text-[10px]">
-                  {nearbyProspects.length}
-                </div>
-                Nearby Prospects Detected
-                <i className="fas fa-chevron-up text-[10px]"></i>
-              </button>
-            </div>
-          )}
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-4 text-xs font-medium text-gray-400">
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-blue-600 border border-white shadow-sm"></div>
-            <span>Standard Prospect</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-orange-500 border border-white shadow-sm"></div>
-            <span>High Spiritual Hunger</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-green-600 border-2 border-white ring-2 ring-green-200 ring-offset-2 animate-pulse"></div>
-            <span>You (Current Location)</span>
-          </div>
         </div>
       </section>
 
-      {/* Recognition Section */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="md:col-span-1 bg-gradient-to-r from-blue-600 to-blue-500 p-6 rounded-2xl shadow-lg text-white">
-          <div className="flex items-center gap-4">
-            <div className="w-14 h-14 bg-white/20 rounded-full flex items-center justify-center text-2xl">
-              <i className="fas fa-trophy"></i>
+      {/* Gemini Strategy Advisor */}
+      {prospects.length > 0 && (
+        <section className="bg-gradient-to-br from-indigo-700 via-purple-700 to-blue-800 p-8 rounded-[2.5rem] shadow-2xl text-white relative overflow-hidden group">
+          <div className="absolute top-0 right-0 p-8 opacity-10 scale-150 rotate-12 transition-transform group-hover:scale-175 group-hover:rotate-6">
+            <i className="fas fa-sparkles text-[120px]"></i>
+          </div>
+          
+          <div className="relative z-10 flex flex-col md:flex-row gap-8 items-start">
+            <div className="shrink-0 flex flex-col items-center">
+              <div className="w-20 h-20 bg-white/20 backdrop-blur-xl rounded-[2rem] flex items-center justify-center text-3xl shadow-xl border border-white/20 animate-pulse">
+                <i className="fas fa-brain"></i>
+              </div>
+              <span className="mt-4 text-[10px] font-black uppercase tracking-widest text-indigo-200">Gemini Strategy Advisor</span>
             </div>
-            <div>
-              <p className="text-blue-100 text-xs font-bold uppercase tracking-wider">Top Team Member</p>
-              <h3 className="text-xl font-bold truncate">{topTeamMember ? topTeamMember.name : 'Waiting...'}</h3>
-              {topTeamMember && <p className="text-sm opacity-90">{topTeamMember.count} souls</p>}
+            
+            <div className="flex-1 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold tracking-tight">Weekly Soul-Winning Insight</h2>
+                <button 
+                  onClick={fetchStrategy}
+                  className="text-white/60 hover:text-white transition-colors p-2"
+                  title="Refresh Insight"
+                >
+                  <i className={`fas fa-sync-alt ${loadingStrategy ? 'fa-spin' : ''}`}></i>
+                </button>
+              </div>
+
+              {loadingStrategy ? (
+                <div className="space-y-4 py-4">
+                  <div className="h-4 bg-white/10 rounded-full w-3/4 animate-pulse"></div>
+                  <div className="h-4 bg-white/10 rounded-full w-1/2 animate-pulse"></div>
+                  <div className="h-4 bg-white/10 rounded-full w-2/3 animate-pulse"></div>
+                </div>
+              ) : (
+                <div className="text-lg leading-relaxed text-indigo-50/90 whitespace-pre-line font-medium italic">
+                  {aiStrategy || "Analyzing the field for the best spiritual entry points..."}
+                </div>
+              )}
             </div>
           </div>
-        </div>
-        <div className="md:col-span-1 bg-gradient-to-r from-purple-600 to-indigo-600 p-6 rounded-2xl shadow-lg text-white">
-          <div className="flex items-center gap-4">
-            <div className="w-14 h-14 bg-white/20 rounded-full flex items-center justify-center text-2xl">
-              <i className="fas fa-star"></i>
-            </div>
-            <div>
-              <p className="text-purple-100 text-xs font-bold uppercase tracking-wider">Top Church Leader</p>
-              <h3 className="text-xl font-bold truncate">{topLeader ? topLeader.name : 'Waiting...'}</h3>
-              {topLeader && <p className="text-sm opacity-90">{topLeader.count} outreach</p>}
-            </div>
-          </div>
-        </div>
-        <div 
-          id="tour-invite-card"
-          onClick={() => setShowInvite(true)}
-          className="md:col-span-1 bg-white p-6 rounded-2xl shadow-md border-2 border-dashed border-blue-200 flex items-center gap-4 cursor-pointer hover:bg-blue-50 hover:border-blue-400 transition-all group"
-        >
-          <div className="w-14 h-14 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 text-2xl group-hover:scale-110 transition-transform">
-            <i className="fas fa-plus"></i>
-          </div>
-          <div>
-            <h3 className="font-bold text-gray-800">Grow Your Team</h3>
-            <p className="text-xs text-gray-500">Share with other preachers</p>
-          </div>
-        </div>
-      </div>
+        </section>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8">
         <section className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
@@ -359,17 +316,8 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <p className="font-semibold text-gray-900 truncate">{p.name}</p>
-                      {p.signifiedForBaptism && (
-                        <i className="fas fa-water text-cyan-500 text-[10px]" title="Baptism Candidate"></i>
-                      )}
                     </div>
                     <p className="text-xs text-gray-500 truncate">{new Date(p.timestamp).toLocaleDateString()} &bull; {p.preacherName}</p>
-                  </div>
-                  <div className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
-                    p.aiReview?.hungerLevel === HungerLevel.HIGH ? 'bg-orange-100 text-orange-600' :
-                    p.aiReview?.hungerLevel === HungerLevel.MEDIUM ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-600'
-                  }`}>
-                    {p.aiReview?.hungerLevel || 'Pending'}
                   </div>
                 </div>
               ))
@@ -390,28 +338,8 @@ const Dashboard: React.FC<DashboardProps> = ({ prospects, users, onSelectProspec
                 <i className="fas fa-lightbulb"></i> Harvest Tip
               </h3>
               <p className="text-sm text-blue-700 mt-2">
-                You have {baptismCandidates} people interested in baptism! Organize a special counseling session this Sunday to move them toward their next spiritual milestone.
+                You have {baptismCandidates} people interested in baptism! Organize a special counseling session this Sunday.
               </p>
-            </div>
-            <div className="space-y-4">
-              <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-widest">Preacher Activity</h3>
-              <div className="space-y-3">
-                {Array.from(new Set(prospects.map(p => p.preacherName))).slice(0, 5).map((name, i) => {
-                  const count = prospects.filter(p => p.preacherName === name).length;
-                  const percentage = (count / prospects.length) * 100;
-                  return (
-                    <div key={i}>
-                      <div className="flex justify-between text-xs mb-1">
-                        <span className="font-medium text-gray-700">{name}</span>
-                        <span className="text-gray-500">{count} souls</span>
-                      </div>
-                      <div className="w-full bg-gray-100 rounded-full h-1.5">
-                        <div className="bg-blue-500 h-1.5 rounded-full" style={{ width: `${percentage}%` }}></div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
             </div>
           </div>
         </section>

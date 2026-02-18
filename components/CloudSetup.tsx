@@ -36,9 +36,13 @@ const CloudSetup: React.FC<CloudSetupProps> = ({ onConnect }) => {
 
   const getDomain = () => {
     try {
-      const origin = window.location.origin;
-      return (origin && origin !== 'null') ? new URL(origin).hostname : (window.location.hostname || "localhost");
-    } catch (e) { return "detecting..."; }
+      // Robust detection for authorized domains
+      const hostname = window.location.hostname;
+      if (hostname === 'localhost' || hostname === '127.0.0.1') return hostname;
+      return hostname || window.location.host.split(':')[0] || "your-domain.com";
+    } catch (e) {
+      return "localhost";
+    }
   };
 
   const currentDomain = getDomain();
@@ -60,7 +64,6 @@ const CloudSetup: React.FC<CloudSetupProps> = ({ onConnect }) => {
     }
     setIsTestingEmail(true);
     try {
-      // Send a test payload to the service
       const templateParams = {
         to_email: "test@example.com",
         from_name: "HarvestHub Configuration Tool",
@@ -183,20 +186,44 @@ const CloudSetup: React.FC<CloudSetupProps> = ({ onConnect }) => {
             <section className="pt-6 border-t border-gray-50">
               <div className="flex items-center gap-3 mb-4">
                 <span className="w-8 h-8 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center font-bold text-sm">2</span>
-                <h3 className="font-bold text-gray-800">Authorized Redirect Domain</h3>
+                <h3 className="font-bold text-gray-800">Security: Trust This Domain</h3>
               </div>
-              <div className="ml-11 space-y-3">
-                <p className="text-xs text-gray-500 leading-relaxed">
-                  Important: For password resets and invitations to work, add this domain to your <strong>Authorized Domains</strong> list in the Firebase Console (Authentication &gt; Settings &gt; Authorized Domains).
-                </p>
-                <div className="flex items-center gap-3 p-4 bg-gray-50 border border-gray-200 rounded-2xl group transition-all hover:border-blue-300 hover:bg-blue-50">
-                  <code className="text-[10px] font-mono font-bold text-blue-800 flex-1 truncate">{currentDomain}</code>
-                  <button 
-                    onClick={() => { navigator.clipboard.writeText(currentDomain); setCopiedDomain(true); setTimeout(() => setCopiedDomain(false), 2000); }}
-                    className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${copiedDomain ? 'bg-green-500 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
-                  >
-                    {copiedDomain ? 'Copied' : 'Copy'}
-                  </button>
+              <div className="ml-11 space-y-4">
+                <div className="p-5 bg-blue-50 border border-blue-200 rounded-3xl">
+                  <div className="flex items-center gap-2 mb-3">
+                    <i className="fas fa-shield-alt text-blue-600"></i>
+                    <p className="text-[11px] font-black text-blue-800 uppercase tracking-tighter">Crucial Setup Step</p>
+                  </div>
+                  <p className="text-xs text-blue-700 leading-relaxed mb-4">
+                    Google Sign-in <strong>will fail</strong> with an "unauthorized-domain" error unless you add the hostname below to your Firebase project.
+                  </p>
+                  <div className="bg-white p-3 rounded-2xl border border-blue-200 shadow-sm flex items-center justify-between group">
+                    <div className="flex-1 overflow-hidden">
+                       <p className="text-[9px] text-gray-400 font-bold uppercase mb-1">Your exact current hostname:</p>
+                       <code className="text-[11px] font-mono font-bold text-blue-900 truncate block">{currentDomain}</code>
+                    </div>
+                    <button 
+                      onClick={() => { navigator.clipboard.writeText(currentDomain); setCopiedDomain(true); setTimeout(() => setCopiedDomain(false), 2000); }}
+                      className={`ml-4 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase transition-all shadow-sm ${copiedDomain ? 'bg-green-500 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                    >
+                      {copiedDomain ? 'Copied!' : 'Copy String'}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-blue-900/60 font-medium mt-4 bg-white/40 p-3 rounded-xl border border-blue-100/50">
+                    <i className="fas fa-question-circle mr-2"></i>
+                    Paste this into: <strong>Firebase Console > Authentication > Settings > Authorized Domains</strong>. 
+                  </p>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100 flex items-start gap-3">
+                    <i className="fas fa-check-circle text-green-500 mt-0.5"></i>
+                    <p className="text-[10px] text-gray-500 font-medium leading-relaxed">Domains like <strong>localhost</strong> are often added automatically by Firebase.</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-2xl border border-gray-100 flex items-start gap-3">
+                    <i className="fas fa-exclamation-triangle text-amber-500 mt-0.5"></i>
+                    <p className="text-[10px] text-gray-500 font-medium leading-relaxed">Temporary preview URLs <strong>must</strong> be added manually every time they change.</p>
+                  </div>
                 </div>
               </div>
             </section>

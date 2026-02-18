@@ -1,18 +1,22 @@
 
 import React, { useState } from 'react';
 import { Prospect, User, HungerLevel, FollowUp, UserRole } from '../types';
+import { generateFollowUpMessage } from '../services/geminiService';
 
 interface ProspectDetailProps {
   prospect: Prospect;
   onBack: () => void;
   onUpdate: (updated: Prospect) => void;
   currentUser: User;
-  allUsers?: User[]; // Pass all users for assignment
+  allUsers?: User[];
 }
 
 const ProspectDetail: React.FC<ProspectDetailProps> = ({ prospect, onBack, onUpdate, currentUser, allUsers = [] }) => {
   const [isAddingFollowUp, setIsAddingFollowUp] = useState(false);
   const [followUpNotes, setFollowUpNotes] = useState('');
+  
+  const [isDrafting, setIsDrafting] = useState(false);
+  const [draftedMessage, setDraftedMessage] = useState<string | null>(null);
 
   const handleAddFollowUp = () => {
     const newFollowUp: FollowUp = {
@@ -31,6 +35,19 @@ const ProspectDetail: React.FC<ProspectDetailProps> = ({ prospect, onBack, onUpd
     onUpdate(updatedProspect);
     setFollowUpNotes('');
     setIsAddingFollowUp(false);
+  };
+
+  const handleDraftMessage = async () => {
+    setIsDrafting(true);
+    setDraftedMessage(null);
+    try {
+      const msg = await generateFollowUpMessage(prospect, currentUser.name);
+      setDraftedMessage(msg);
+    } catch (e) {
+      alert("AI failed to draft message. Please try again.");
+    } finally {
+      setIsDrafting(false);
+    }
   };
 
   const handleAssign = (userId: string) => {
@@ -59,6 +76,11 @@ const ProspectDetail: React.FC<ProspectDetailProps> = ({ prospect, onBack, onUpd
 
   const handleToggleBaptism = () => {
     onUpdate({ ...prospect, signifiedForBaptism: !prospect.signifiedForBaptism });
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    alert("Message copied to clipboard!");
   };
 
   const canAssign = currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.SUPER_ADMIN;
@@ -150,7 +172,46 @@ const ProspectDetail: React.FC<ProspectDetailProps> = ({ prospect, onBack, onUpd
                     )}
                   </div>
                 </div>
+                <div className="flex flex-col gap-2">
+                   <button 
+                    onClick={handleDraftMessage}
+                    disabled={isDrafting}
+                    className="bg-indigo-600 text-white px-5 py-3 rounded-2xl font-bold text-sm shadow-lg shadow-indigo-100 flex items-center gap-2 hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-50"
+                   >
+                     {isDrafting ? <i className="fas fa-sparkles fa-spin"></i> : <i className="fas fa-sparkles"></i>}
+                     Draft Follow-up
+                   </button>
+                </div>
               </div>
+
+              {draftedMessage && (
+                <div className="mb-8 p-6 bg-indigo-50 border border-indigo-100 rounded-3xl animate-in slide-in-from-top-4 duration-500 relative group">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-indigo-800 font-bold text-sm flex items-center gap-2">
+                      <i className="fas fa-magic"></i>
+                      Gemini Outreach Suggestion
+                    </h3>
+                    <button 
+                      onClick={() => setDraftedMessage(null)}
+                      className="text-indigo-300 hover:text-indigo-600"
+                    >
+                      <i className="fas fa-times"></i>
+                    </button>
+                  </div>
+                  <p className="text-sm text-indigo-700 italic leading-relaxed whitespace-pre-wrap">
+                    "{draftedMessage}"
+                  </p>
+                  <div className="mt-4 flex justify-end">
+                    <button 
+                      onClick={() => copyToClipboard(draftedMessage)}
+                      className="bg-white text-indigo-600 px-4 py-2 rounded-xl text-xs font-bold shadow-sm hover:shadow-md transition-all flex items-center gap-2"
+                    >
+                      <i className="fas fa-copy"></i>
+                      Copy to Clipboard
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-8 border-t border-gray-100">
                 <section className="space-y-4">

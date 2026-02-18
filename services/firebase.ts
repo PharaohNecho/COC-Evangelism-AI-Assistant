@@ -56,7 +56,7 @@ export const initFirebase = async (config: FirebaseConfig) => {
     await setPersistence(auth, browserLocalPersistence);
     
     localStorage.setItem('harvest_hub_cloud_config', JSON.stringify(config));
-    return { auth, db };
+    return { auth, db, googleProvider };
   } catch (error) {
     console.error("Firebase initialization failed:", error);
     return null;
